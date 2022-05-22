@@ -8,7 +8,7 @@
 4. [Compiling and migrating the smart contract](#4-compiling-and-migrating-the-smart-contract)
 5. [Testing the smart contract](#5-testing-the-smart-contract)
 6. [Creating a user interface to interact with the smart contract](#6-creating-a-user-interface-to-interact-with-the-smart-contract)
-7. Interacting with the dapp in a browser
+7. [Interacting with the dapp in a browser](#7-interacting-with-the-dapp-in-a-browser)
 
 ---
 
@@ -274,3 +274,200 @@ Compiling your contracts...
 ```
 
 ## 6. Creating a user interface to interact with the smart contract
+
+### Instantiating `web3`
+
+Open `basic/02_truffle_pet-shop/src/js/app.js`, and remove the multi-line comment from within `initWeb3` and replace it with the following:
+
+```javascript
+initWeb3: async function () {
+    // Modern dapp browsers...
+    if (window.ethereum) {
+      App.web3Provider = window.ethereum;
+      try {
+        // Request account access
+        await window.ethereum.request({ method: "eth_requestAccounts" });
+      } catch (error) {
+        // User denied account access...
+        console.error("User denied account access");
+      }
+    }
+    // Legacy dapp browsers...
+    else if (window.web3) {
+      App.web3Provider = window.web3.currentProvider;
+    }
+    // If no injected web3 instance is detected, fall back to Ganache
+    else {
+      App.web3Provider = new Web3.providers.HttpProvider(
+        "http://localhost:7545"
+      );
+    }
+    web3 = new Web3(App.web3Provider);
+
+    return App.initContract();
+},
+```
+
+- First, we check if we are using modern dapp browsers or the more recent versions of `MetaMask` where an `ethereum` provider is injected into the window object. If so, we use it to create our web3 object, but we also need to explicitly request access to the accounts with `ethereum.enable()`.
+
+- If the `ethereum` object does not exist, we then check for an injected web3 instance. If it exists, this indicates that we are using an older dapp browser. If so, we get its provider and use it to create our web3 object.
+
+- If no injected web3 instance is present, we create our web3 object based on our local provider. (This fallback is fine for development environments, but insecure and not suitable for production.)
+
+### Instantiating the `contract`
+
+Open `basic/02_truffle_pet-shop/src/js/app.js`, and remove the multi-line comment from within `initContract` and replace it with the following:
+
+```javascript
+initContract: function () {
+    $.getJSON("Adoption.json", function (data) {
+        // Get the necessary contract artifact file and instantiate it with @truffle/contract
+        var AdoptionArtifact = data;
+        App.contracts.Adoption = TruffleContract(AdoptionArtifact);
+
+        // Set the provider for our contract
+        App.contracts.Adoption.setProvider(App.web3Provider);
+
+        // Use our contract to retrieve and mark the adopted pets
+        return App.markAdopted();
+    });
+
+    return App.bindEvents();
+},
+```
+
+- We first retrieve the artifact file for our smart contract. **Artifacts are information about our contract such as its deployed address and Application Binary Interface (ABI). The ABI is a JavaScript object defining how to interact with the contract including its variables, functions and their parameters.**
+
+- Once we have the artifacts in our callback, we pass them to `TruffleContract()`. This creates an instance of the contract we can interact with.
+
+- With our contract instantiated, we set its web3 provider using the `App.web3Provider` value we stored earlier when setting up web3.
+
+- We then call the app's `markAdopted()` function in case any pets are already adopted from a previous visit. We've encapsulated this in a separate function since we'll need to update the UI any time we make a change to the smart contract's data.
+
+### Getting The Adopted Pets and Updating The UI
+
+Open `basic/02_truffle_pet-shop/src/js/app.js`, and remove the multi-line comment from within `markAdopted` and replace it with the following:
+
+```javascript
+markAdopted: function () {
+    var adoptionInstance;
+
+    App.contracts.Adoption.deployed()
+        .then(function (instance) {
+            adoptionInstance = instance;
+            return adoptionInstance.getAdopters.call();
+        })
+        .then(function (adopters) {
+            for (i = 0; i < adopters.length; i++) {
+                if (adopters[i] !== "0x0000000000000000000000000000000000000000") {
+                $(".panel-pet")
+                    .eq(i)
+                    .find("button")
+                    .text("Success")
+                    .attr("disabled", true);
+                }
+            }
+        })
+        .catch(function (err) {
+            console.log(err.message);
+        });
+},
+```
+
+- We access the deployed `Adoption` contract, then call `getAdopters()` on that instance.
+
+- We first declare the variable `adoptionInstance` outside of the smart contract calls so we can access the instance after initially retrieving it.
+
+- Using `call()` allows us to read data from the blockchain without having to send a full transaction, meaning we won't have to spend any ether.
+
+- After calling `getAdopters()`, we then loop through all of them, checking to see if an address is stored for each pet. Since the array contains address types, Ethereum initializes the array with 16 empty addresses. This is why we check for an empty address string rather than null or other falsey value.
+
+- Once a `petId` with a corresponding address is found, we disable its adopt button and change the button text to "Success", so the user gets some feedback.
+
+- Any errors are logged to the console.
+
+### Handling the `adopt()` Function
+
+Open `basic/02_truffle_pet-shop/src/js/app.js`, and remove the multi-line comment from within `handleAdopt` and replace it with the following:
+
+```javascript
+handleAdopt: function (event) {
+    event.preventDefault();
+
+    var petId = parseInt($(event.target).data("id"));
+
+    var adoptionInstance;
+
+    web3.eth.getAccounts(function (error, accounts) {
+        if (error) {
+            console.log(error);
+        }
+
+        var account = accounts[0];
+
+        App.contracts.Adoption.deployed()
+            .then(function (instance) {
+                adoptionInstance = instance;
+
+                // Execute adopt as a transaction by sending account
+                return adoptionInstance.adopt(petId, { from: account });
+            })
+            .then(function (result) {
+                return App.markAdopted();
+            })
+            .catch(function (err) {
+                console.log(err.message);
+            });
+    });
+},
+```
+- We use web3 to get the user's accounts. In the callback after an error check, we then select the first account.
+
+- From there, we get the deployed contract as we did above and store the instance in `adoptionInstance`. This time though, we're going to send a **transaction** instead of a call. Transactions require a "from" address and have an associated cost. This cost, paid in ether, is called **gas**. The gas cost is the fee for performing computation and/or storing data in a smart contract. We send the transaction by executing the `adopt()` function with both the pet's ID and an object containing the account address, which we stored earlier in `account`.
+
+- The result of sending a transaction is the transaction object. If there are no errors, we proceed to call our `markAdopted()` function to sync the UI with our newly stored data.
+
+## 7. Interacting with the dapp in a browser
+### MetaMask
+1. Click Import Wallet. In the box marked Wallet Seed, enter the `mnemonic` that is displayed in Ganache.
+
+2. We need to connect `MetaMask` to the blockchain created by `Ganache`. Click the menu that shows "**Main Network**" and select Custom RPC.
+
+3. In the box titled "New Network" enter `http://127.0.0.1:7545`, in the box titled "Chain ID" enter `1337` (Default Chain ID for `Ganache`) and click Save.
+
+4. Each account created by `Ganache` is given 100 ether. You'll notice it's slightly less on the first account because some gas was used when the contract itself was deployed and when the tests were run.
+
+### Installing and configuring lite-server
+We can now start a local web server and use the dapp. We're using the lite-server library to serve our static files. This shipped with the pet-shop Truffle Box, but let's take a look at how it works.
+
+1. Open `bs-config.json` in a text editor (in the project's root directory) and examine the contents:
+
+    ```json
+    {
+    "server": {
+        "baseDir": ["./src", "./build/contracts"]
+    }
+    }
+    ```
+
+2. Check `package.json`:
+    ```json
+         "scripts": {
+            "dev": "lite-server",
+            "test": "echo \"Error: no test specified\" && exit 1"
+        },
+    ```
+
+### Using the dapp
+Start the local web server:
+```bash
+npm run dev
+```
+![pet-shop](https://trufflesuite.com/img/tutorials/pet-shop/dapp.png)
+
+Have fun!
+
+
+## Reference
+
+https://trufflesuite.com/tutorial/
